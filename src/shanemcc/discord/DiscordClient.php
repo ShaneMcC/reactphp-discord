@@ -30,6 +30,7 @@
 
 		private $httpClient = null;
 		private $gwInfo = [];
+		private $myInfo = [];
 		private $shards = [];
 		private $slowMessageQueue = [];
 
@@ -115,6 +116,7 @@
 			$this->disconnecting = false;
 			$this->httpClient = null;
 			$this->gwInfo = [];
+			$this->myInfo = [];
 			$this->shards = [];
 			$this->guilds = [];
 			$this->personChannels = [];
@@ -124,17 +126,20 @@
 			$this->cleanupTimerID = '';
 		}
 
-		private function doEmit(String $event, array $params = []) {
+		private function doEmit(String $event, array $params = [], $internalOnly = false) {
 			// Internal Emitter for our own events that users can't
 			// add/remove things on.
 			try {
 				$this->internalEmitter->emit($event, $params);
 			} catch (Throwable $t) { $this->showThrowable($t); }
 
+			if ($internalOnly) { return; }
+
 			// The public emitter includes a reference to us as the first
 			// param.
 			try {
 				array_unshift($params, $this);
+
 				$this->emit($event, $params);
 			} catch (Throwable $t) { $this->showThrowable($t); }
 		}
@@ -216,6 +221,10 @@
 
 			$this->httpClient = new HTTPClient($this->loopInterface);
 
+			$this->getRequest('/users/@me', function ($data, $headers) {
+				$this->myInfo = json_decode($data, true);
+			})->end();
+
 			$this->getRequest('/gateway/bot', function ($data, $headers) {
 				$this->gwInfo = json_decode($data, true);
 				if (isset($this->gwInfo['shards'])) {
@@ -249,6 +258,10 @@
 			});
 
 			if ($startLoop) { $this->getLoopInterface()->run(); }
+		}
+
+		public function getMyInfo(): Array {
+			return $this->myInfo;
 		}
 
 		public function disconnect() {
@@ -325,7 +338,7 @@
 				$this->doEmit('shard.connected', [$shard]);
 
 				$conn->on('message', function(RatchetMessageInterface $msg) use ($shard, $conn) {
-					$this->doEmit('shard.message', [$shard, $msg]);
+					$this->doEmit('shard.message', [$shard, $msg], true);
 				});
 
 				$conn->on('close', function($code = null, $reason = null) use ($shard) {
@@ -470,7 +483,7 @@
 
 		public function handleGuildDelete(int $shard, String $event, Array $data) {
 			if (isset($this->guilds[$data['id']])) {
-				echo 'Lost server on shard ', $shard, ': ', $this->guilds[$data['id']]['name'], ' (', $data['id'], ')', "\n";
+				echo 'Removed server on shard ', $shard, ': ', $this->guilds[$data['id']]['name'], ' (', $data['id'], ')', "\n";
 
 				unset($this->guilds[$data['id']]);
 			}
@@ -481,12 +494,16 @@
 				$guildID = $data['guild_id'];
 				$chanID = $data['id'];
 
+				if (isset($this->guilds[$guildID]['channels'][$chanID])) { return; }
+
 				$this->guilds[$guildID]['channels'][$chanID] = [];
 				$this->guilds[$guildID]['channels'][$chanID]['name'] = $data['name'];
 
 				echo 'Found new channel for server ', $this->guilds[$guildID]['name'], ' (', $guildID, ') on shard ', $shard, ': ', $data['name'], ' (', $chanID, ')', "\n";
 			} else if ($data['type'] == '1') {
 				$person = $data['recipients'][0];
+				if (isset($this->personChannels[$person['id']])) { return; }
+
 				$this->personChannels[$person['id']] = ['id' => $data['id'], 'time' => time()];
 				echo 'Found new channel for person ', $person['username'], '#', $person['discriminator'], ' (', $person['id'], ') on shard ', $shard, ': ', $data['id'], "\n";
 			} else if ($this->debug) {
@@ -500,7 +517,7 @@
 				$chanID = $data['id'];
 				unset($this->guilds[$guildID]['channels'][$chanID]);
 
-				echo 'Lost channel on server ', $this->guilds[$guildID]['name'], ' (', $guildID, ') on shard ', $shard, ': ', $data['name'], ' (', $chanID, ')', "\n";
+				echo 'Removed channel on server ', $this->guilds[$guildID]['name'], ' (', $guildID, ') on shard ', $shard, ': ', $data['name'], ' (', $chanID, ')', "\n";
 			} else if ($data['type'] == '1') {
 				$person = $data['recipients'][0];
 				unset($this->personChannels[$person['id']]);
@@ -569,20 +586,23 @@
 		public function sendPersonMessage(String $person, String $message) {
 			// if (!$this->validPerson($person)) { return; }
 
-			if (isset($personChannels[$person])) {
+			if (isset($this->personChannelss[$person])) {
 				$this->personChannels[$person]['time'] = time();
-				$this->sendPersonChannelMessage($personChannels[$person]['id'], $message);
+				$this->sendPersonChannelMessage($this->personChannels[$person]['id'], $message);
 			} else {
 				$data = json_encode(['recipient_id' => $person]);
 				$headers = [];
 				$headers['content-length'] = strlen($data);
 				$headers['content-type'] = 'application/json';
 
-				$this->getRequest('/users/@me/channels', null, 'POST', $headers)->end($data);
+				$this->getRequest('/users/@me/channels', function ($data, $headers) use ($message) {
+					$data = json_decode($data, true);
+					$this->sendPersonChannelMessage($data['id'], $message);
+				}, 'POST', $headers)->end($data);
 			}
 		}
 
-		private function sendPersonChannelMessage(String $personChannel, String $message) {
+		public function sendPersonChannelMessage(String $personChannel, String $message) {
 			$sendMessage = [];
 			$sendMessage['content'] = $message;
 
