@@ -39,8 +39,6 @@
 
 		private $connectTime = 0;
 
-		private $debug = false;
-
 		private $disconnecting = false;
 
 		/**
@@ -150,10 +148,18 @@
 		 * @param Throwable $throwable The exception
 		 */
 		public function showThrowable(Throwable $throwable) {
-			echo 'Throwable caught.', "\n";
-			echo "\t", $throwable->getMessage(), "\n";
-			foreach (explode("\n", $throwable->getTraceAsString()) as $t) {
-				echo "\t\t", $t, "\n";
+			try {
+				$this->emit('DiscordClient.throwable', [$this, $throwable]);
+			} catch (Throwable $throwable2) {
+				echo 'Caught Throwable: ', $throwable2->getMessage(), "\n";
+				foreach (explode("\n", $throwable2->getTraceAsString()) as $t) {
+					echo "\t", $t, "\n";
+				}
+				echo "\n";
+				echo 'Caused trying to throw: ', $throwable->getMessage(), "\n";
+				foreach (explode("\n", $throwable->getTraceAsString()) as $t) {
+					echo "\t", $t, "\n";
+				}
 			}
 		}
 
@@ -178,28 +184,6 @@
 		 */
 		public function getLoopInterface(): LoopInterface {
 			return $this->loopInterface;
-		}
-
-
-		/**
-		 * Set if we are in debugging mode or not.
-		 *
-		 * @param bool $debug
-		 * @return self
-		 */
-		public function setDebug(bool $debug) {
-			$this->debug = $debug;
-
-			return $this;
-		}
-
-		/**
-		 * Get if we are in debugging mode or not.
-		 *
-		 * @return bool debugging mode enabled or not
-		 */
-		public function getDebug(): bool {
-			return $this->debug;
 		}
 
 		/**
@@ -230,7 +214,7 @@
 				if (isset($this->gwInfo['shards'])) {
 					$this->connectToGateway($this->gwInfo['shards']);
 				} else {
-					echo 'Unknown response from API: ', $data, "\n";
+					$this->doEmit('DiscordClient.message', ['Unknown response from API', $data]);
 				}
 			})->end();
 
@@ -330,10 +314,11 @@
 		private function connectShard(int $shard) {
 			$connector = new RatchetConnector($this->getLoopInterface());
 
-			if ($this->debug) { echo 'Connecting shard: ', $shard, "\n"; }
+			$this->doEmit('DiscordClient.debugMessage', ['Connecting shard: ' . $shard]);
 
 			$connector($this->gwInfo['url'] . '/?v=6&encoding=json')->then(function(WebSocket $conn) use ($shard) {
-				if ($this->debug) { echo 'Connected shard: ', $shard, "\n"; }
+				$this->doEmit('DiscordClient.debugMessage', ['Connected shard: ' . $shard]);
+
 				$this->shards[$shard] = ['conn' => $conn, 'seq' => null, 'ready' => false];
 				$this->doEmit('shard.connected', [$shard]);
 
@@ -348,10 +333,10 @@
 			}, function(\Exception $e) use ($shard) {
 				$this->doEmit('shard.connect.error', [$shard]);
 
-				if ($this->debug) { echo 'Could not connect shard ', $shard, ': ', $e->getMessage(), "\n"; }
+				$this->doEmit('DiscordClient.debugMessage', ['Could not connect shard ' . $shard . ': ' . $e->getMessage()]);
 
 				$this->getLoopInterface()->addTimer(30, function() use ($shard) {
-					if ($this->debug) { echo 'Trying again to connect shard: ', $shard, "\n"; }
+					$this->doEmit('DiscordClient.debugMessage', ['Trying again to connect shard: ' . $shard]);
 					$this->connectShard($shard);
 				});
 			});
@@ -373,8 +358,8 @@
 			$data = json_decode($msg->getPayload(), true);
 			$opcode = $data['op'];
 
-			if ($this->debug && empty($this->internalEmitter->listeners('opcode.' . $opcode))) {
-				echo 'Got Unknown Message on shard ', $shard, ': ', $msg->getPayload(), "\n";
+			if (empty($this->internalEmitter->listeners('opcode.' . $opcode))) {
+				$this->doEmit('DiscordClient.debugMessage', ['Got Unknown Message on shard ' . $shard, $msg]);
 			}
 
 			$this->doEmit('opcode.' . $opcode, [$shard, $opcode, $data]);
@@ -404,7 +389,7 @@
 			$identify['compress'] = false;
 			$identify['shard'] = [$shard, $this->gwInfo['shards']];
 
-			echo 'Scheduling identify for shard ', $shard, "\n";
+			$this->doEmit('DiscordClient.message', ['Scheduling identify for shard ' . $shard]);
 			$this->slowMessageQueue[] = [$shard, 2, $identify];
 		}
 
@@ -421,11 +406,11 @@
 				if ($this->shards[$shard]['timerID'] != $timerID) { return; }
 
 				if ($this->shards[$shard]['sentHB']) {
-					if ($this->debug) { echo 'Shard connection appears to be dead: ', $shard, "\n"; }
+					$this->doEmit('DiscordClient.debugMessage', ['Shard connection appears to be dead: ' . $shard]);
 
 					$this->shards[$shard]['conn']->close();
 				} else {
-					if ($this->debug) { echo 'Sending heartbeat for shard: ', $shard, "\n"; }
+					$this->doEmit('DiscordClient.debugMessage', ['Sending heartbeat for shard: ' . $shard]);
 					$this->shards[$shard]['sentHB'] = true;
 
 					$this->sendShardMessage($shard, 1, $this->shards[$shard]['seq']);
@@ -435,11 +420,11 @@
 		}
 
 		public function gotHeartBeat(int $shard, int $opcode, Array $data) {
-			if ($this->debug) { echo 'Got HB on shard ', $shard, ': ', json_encode($data), "\n"; }
+			$this->doEmit('DiscordClient.debugMessage', ['Got HB on shard ' . $shard, $data]);
 		}
 
 		public function gotHeartBeatAck(int $shard, int $opcode, Array $data) {
-			if ($this->debug) { echo 'Got HB Ack on shard ', $shard, ': ', json_encode($data), "\n"; }
+			$this->doEmit('DiscordClient.debugMessage', ['Got HB Ack on shard ' . $shard, $data]);
 		}
 
 		public function gotDispatch(int $shard, int $opcode, Array $data) {
@@ -448,8 +433,8 @@
 			$event = $data['t'];
 			$eventData = $data['d'];
 
-			if ($this->debug && empty($this->internalEmitter->listeners('event.' . $event))) {
-				echo 'Got Unknown Event on shard ', $shard, ': ', json_encode($data), "\n";
+			if (empty($this->internalEmitter->listeners('event.' . $event))) {
+				$this->doEmit('DiscordClient.debugMessage', ['Got Unknown Event on shard ' . $shard, $data]);
 			}
 			$this->doEmit('event.' . $event, [$shard, $event, $eventData]);
 		}
@@ -458,7 +443,7 @@
 
 		public function handleReadyEvent(int $shard, String $event, Array $data) {
 			$this->shards[$shard]['ready'] = true;
-			if ($this->debug) { echo 'Shard is ready: ', $shard, "\n"; }
+			$this->doEmit('DiscordClient.debugMessage', ['Shard is ready: ' . $shard]);
 		}
 
 		public function handleGuildCreate(int $shard, String $event, Array $data) {
@@ -467,14 +452,14 @@
 			$guildData['shard'] = $shard;
 			$guildData['channels'] = [];
 
-			echo 'Found new server on shard ', $shard, ': ', $guildData['name'], ' (', $data['id'], ')', "\n";
+			$this->doEmit('DiscordClient.message', ['Found new server on shard ' . $shard . ': ' . $guildData['name'] . ' (' . $data['id'] . ')']);
 
 			foreach ($data['channels'] as $channel) {
 				if ($channel['type'] == '0') {
 					$guildData['channels'][$channel['id']] = [];
 					$guildData['channels'][$channel['id']]['name'] = $channel['name'];
 
-					echo "\t", 'Channel: ', $channel['name'], ' (', $channel['id'], ')', "\n";
+					$this->doEmit('DiscordClient.message', ["\t" . 'Channel: ' . $channel['name'] . ' (' . $channel['id'] . ')']);
 				}
 			}
 
@@ -483,7 +468,7 @@
 
 		public function handleGuildDelete(int $shard, String $event, Array $data) {
 			if (isset($this->guilds[$data['id']])) {
-				echo 'Removed server on shard ', $shard, ': ', $this->guilds[$data['id']]['name'], ' (', $data['id'], ')', "\n";
+				$this->doEmit('DiscordClient.message', ['Removed server on shard ' . $shard, ': ' . $this->guilds[$data['id']]['name'] . ' (' . $data['id'] . ')']);
 
 				unset($this->guilds[$data['id']]);
 			}
@@ -499,15 +484,15 @@
 				$this->guilds[$guildID]['channels'][$chanID] = [];
 				$this->guilds[$guildID]['channels'][$chanID]['name'] = $data['name'];
 
-				echo 'Found new channel for server ', $this->guilds[$guildID]['name'], ' (', $guildID, ') on shard ', $shard, ': ', $data['name'], ' (', $chanID, ')', "\n";
+				$this->doEmit('DiscordClient.message', ['Found new channel for server ' . $this->guilds[$guildID]['name'] . ' (' . $guildID . ') on shard ' . $shard . ': ' . $data['name'] . ' (' . $chanID . ')']);
 			} else if ($data['type'] == '1') {
 				$person = $data['recipients'][0];
 				if (isset($this->personChannels[$person['id']])) { return; }
 
 				$this->personChannels[$person['id']] = ['id' => $data['id'], 'time' => time()];
-				echo 'Found new channel for person ', $person['username'], '#', $person['discriminator'], ' (', $person['id'], ') on shard ', $shard, ': ', $data['id'], "\n";
-			} else if ($this->debug) {
-				echo 'Found new channel on shard ', $shard, ': ', json_encode($data), "\n";
+				$this->doEmit('DiscordClient.message', ['Found new channel for person ' . $person['username'] . '#' . $person['discriminator'] . ' (' . $person['id'] . ') on shard ' . $shard . ': ' . $data['id']]);
+			} else {
+				$this->doEmit('DiscordClient.message', ['Found new channel on shard ' . $shard, $data]);
 			}
 		}
 
@@ -517,28 +502,28 @@
 				$chanID = $data['id'];
 				unset($this->guilds[$guildID]['channels'][$chanID]);
 
-				echo 'Removed channel on server ', $this->guilds[$guildID]['name'], ' (', $guildID, ') on shard ', $shard, ': ', $data['name'], ' (', $chanID, ')', "\n";
+				$this->doEmit('DiscordClient.message', ['Removed channel on server ' . $this->guilds[$guildID]['name'] . ' (' . $guildID . ') on shard ' . $shard . ': ' . $data['name'] . ' (' . $chanID . ')']);
 			} else if ($data['type'] == '1') {
 				$person = $data['recipients'][0];
 				unset($this->personChannels[$person['id']]);
-				echo 'Removed channel for person ', $person['username'], '#', $person['discriminator'], ' (', $person['id'], ') on shard ', $shard, ': ', $data['id'], "\n";
-			} else if ($this->debug) {
-				echo 'Removed channel on shard ', $shard, ': ', json_encode($data), "\n";
+				$this->doEmit('DiscordClient.message', ['Removed channel for person ' . $person['username'] . '#' . $person['discriminator'] . ' (' . $person['id'] . ') on shard ' . $shard. ': ' . $data['id']]);
+			} else {
+				$this->doEmit('DiscordClient.message', ['Removed channel on shard ' . $shard, $data]);
 			}
 
 		}
 
 		public function shardClosed(int $shard, $code = null, $reason = null) {
-			if ($this->debug) { echo 'Shard ', $shard, ' closed (', $code, ' - ', $reason. ')', "\n"; }
+			$this->doEmit('DiscordClient.debugMessage', ['Shard ' . $shard . ' closed (' . $code . ' - ' . $reason . ')']);
 
 			if (!$this->disconnecting) {
 				$reconnectTime = 5;
 
 				if ($code == 4003 || $code == 4004) {
-					echo 'Error Connecting - authentication error - not attempting to reconnect.', "\n";
+					$this->doEmit('DiscordClient.message', ['Error Connecting - authentication error - not attempting to reconnect.']);
 				} else {
 					$this->getLoopInterface()->addTimer($reconnectTime, function() use ($shard) {
-						if ($this->debug) { echo 'Reconnecting shard: ', $shard, "\n"; }
+						$this->doEmit('DiscordClient.debugMessage', ['Reconnecting shard: ' . $shard]);
 						$this->connectShard($shard);
 					});
 				}
@@ -567,6 +552,11 @@
 
 		public function validPerson(String $target): bool {
 			return FALSE;
+		}
+
+		public function getChannelMessages(String $server, String $channel, Callable $function) {
+			if (!$this->validChannel($server, $channel)) { return; }
+			$this->getRequest('/channels/' . $channel . '/messages', $function)->end();
 		}
 
 		public function sendChannelMessage(String $server, String $channel, String $message) {
