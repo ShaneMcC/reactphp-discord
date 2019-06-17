@@ -27,6 +27,7 @@
 		private $clientID = '';
 		private $clientSecret = '';
 		private $token = '';
+		private $isBot = true;
 
 		private $httpClient = null;
 		private $gwInfo = [];
@@ -44,12 +45,13 @@
 		/**
 		 * Create a new IRCClient.
 		 */
-		public function __construct($clientID, $clientSecret, $token) {
+		public function __construct($clientID, $clientSecret, $token, $isBot = true) {
 			$this->internalEmitter = new EventEmitter();
 
 			$this->clientID = $clientID;
 			$this->clientSecret = $clientSecret;
 			$this->token = $token;
+			$this->isBot = $isBot;
 
 			// Connection Handling
 			$this->internalEmitter->on('shard.closed', [$this, 'shardClosed']);
@@ -209,10 +211,13 @@
 				$this->myInfo = json_decode($data, true);
 			})->end();
 
-			$this->getRequest('/gateway/bot', function ($data, $headers) {
+			$gatewayName = $this->isBot ? '/gateway/bot' : '/gateway';
+			$this->getRequest($gatewayName, function ($data, $headers) {
 				$this->gwInfo = json_decode($data, true);
 				if (isset($this->gwInfo['shards'])) {
 					$this->connectToGateway($this->gwInfo['shards']);
+				} else if (isset($this->gwInfo['url'])) {
+					$this->connectToGateway();
 				} else {
 					$this->doEmit('DiscordClient.message', ['Unknown response from API', $data]);
 				}
@@ -270,7 +275,7 @@
 
 		private function getRequest(String $endpoint, ?Callable $gotResponse = null, String $type = 'GET', Array $headers = []) {
 			$headers['User-Agent'] = 'shanemcc/reactphp-discord (https://github.com/shanemcc/reactphp-discord, 0.1)';
-			$headers['Authorization'] = 'Bot ' . $this->token;
+			$headers['Authorization'] = ($this->isBot ? 'Bot ' : '') . $this->token;
 
 			$url = 'https://discordapp.com/api/v6' . $endpoint;
 
@@ -385,11 +390,20 @@
 		private function sendIdentify(int $shard) {
 			$identify = [];
 			$identify['token'] = $this->token;
-			$identify['properties'] = ['os' => PHP_OS, 'browser' => 'shanemcc/reactphp-discord', 'library' => 'shanemcc/reactphp-discord'];
-			$identify['compress'] = false;
-			$identify['shard'] = [$shard, $this->gwInfo['shards']];
 
-			$this->doEmit('DiscordClient.message', ['Scheduling identify for shard ' . $shard]);
+			$identify['properties'] = [];
+			$identify['properties']['$os'] = PHP_OS;
+			$identify['properties']['$browser'] = 'shanemcc/reactphp-discord';
+			$identify['properties']['$device'] = 'reactphp-discord';
+			// $identify['properties']['$library'] = 'shanemcc/reactphp-discord';
+
+			if ($this->isBot && isset($this->gwInfo['shards'])) {
+				$identify['shard'] = [$shard, $this->gwInfo['shards']];
+			}
+
+			$identify['compress'] = "false";
+
+			$this->doEmit('DiscordClient.message', ['Scheduling identify for shard ' . $shard, $identify]);
 			$this->slowMessageQueue[] = [$shard, 2, $identify];
 		}
 
