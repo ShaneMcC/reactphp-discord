@@ -95,3 +95,10 @@ Simple example below:
 	// We manage our own LoopInterface, so start it here.
 	$loop->run();
 ```
+
+# How to handle exceptions
+```
+        $client->on('DiscordClient.throwable', function (DiscordClient $client, \Throwable $e) {
+            echo 'Error: ' . $e->getMessage() . PHP_EOL;
+        });
+```
